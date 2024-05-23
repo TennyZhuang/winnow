@@ -245,33 +245,55 @@ where
     #[doc(alias = "fold_many_m_n")]
     #[doc(alias = "fold_repeat")]
     #[inline(always)]
-    pub fn fold<Init, Op, Result>(
+    pub fn fold<Init, Op, Result>(self, mut init: Init, op: Op) -> impl Parser<Input, Result, Error>
+    where
+        Init: FnMut() -> Result,
+        Op: FnMut(Result, Output) -> Result,
+    {
+        trace(
+            "repeat_fold",
+            self.fold_inner(move |_: &mut Input| Ok(init()), op),
+        )
+    }
+
+    /// Similar to [`fold`], but accept `init` as a [`Parser`].
+    pub fn fold1<ParseInit, Op, Result>(
+        self,
+        parse_init: ParseInit,
+        op: Op,
+    ) -> impl Parser<Input, Result, Error>
+    where
+        ParseInit: Parser<Input, Result, Error>,
+        Op: FnMut(Result, Output) -> Result,
+    {
+        trace("fold_repeat1", self.fold_inner(parse_init, op))
+    }
+
+    fn fold_inner<ParseInit, Op, Result>(
         mut self,
-        mut init: Init,
+        mut parse_init: ParseInit,
         mut op: Op,
     ) -> impl Parser<Input, Result, Error>
     where
-        Init: FnMut() -> Result,
+        ParseInit: Parser<Input, Result, Error>,
         Op: FnMut(Result, Output) -> Result,
     {
         let Range {
             start_inclusive,
             end_inclusive,
         } = self.occurrences;
-        trace("repeat_fold", move |i: &mut Input| {
-            match (start_inclusive, end_inclusive) {
-                (0, None) => fold_repeat0_(&mut self.parser, &mut init, &mut op, i),
-                (1, None) => fold_repeat1_(&mut self.parser, &mut init, &mut op, i),
-                (start, end) => fold_repeat_m_n_(
-                    start,
-                    end.unwrap_or(usize::MAX),
-                    &mut self.parser,
-                    &mut init,
-                    &mut op,
-                    i,
-                ),
-            }
-        })
+        move |i: &mut Input| match (start_inclusive, end_inclusive) {
+            (0, None) => fold_repeat0_(&mut self.parser, &mut parse_init, &mut op, i),
+            (1, None) => fold_repeat1_(&mut self.parser, &mut parse_init, &mut op, i),
+            (start, end) => fold_repeat_m_n_(
+                start,
+                end.unwrap_or(usize::MAX),
+                &mut self.parser,
+                &mut parse_init,
+                &mut op,
+                i,
+            ),
+        }
     }
 }
 
@@ -1171,10 +1193,10 @@ where
     I: Stream,
     F: Parser<I, O, E>,
     G: FnMut(R, O) -> R,
-    H: FnMut() -> R,
+    H: Parser<I, R, E>,
     E: ParserError<I>,
 {
-    let mut res = init();
+    let mut res = init.parse_next(input)?;
 
     loop {
         let start = input.checkpoint();
@@ -1212,10 +1234,10 @@ where
     I: Stream,
     F: Parser<I, O, E>,
     G: FnMut(R, O) -> R,
-    H: FnMut() -> R,
+    H: Parser<I, R, E>,
     E: ParserError<I>,
 {
-    let init = init();
+    let init = init.parse_next(input)?;
     match f.parse_next(input) {
         Err(ErrMode::Backtrack(_)) => Err(ErrMode::from_error_kind(input, ErrorKind::Many)),
         Err(e) => Err(e),
@@ -1262,7 +1284,7 @@ where
     I: Stream,
     F: Parser<I, O, E>,
     G: FnMut(R, O) -> R,
-    H: FnMut() -> R,
+    H: Parser<I, R, E>,
     E: ParserError<I>,
 {
     if min > max {
@@ -1272,7 +1294,7 @@ where
         ));
     }
 
-    let mut acc = init();
+    let mut acc = init.parse_next(input)?;
     for count in 0..max {
         let start = input.checkpoint();
         let len = input.eof_offset();
